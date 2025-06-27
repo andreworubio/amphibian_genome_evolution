@@ -1,0 +1,228 @@
+---
+title: "amphibian genome size"
+output: html_document
+date: "2025-06-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#read in landscape data frame and manipulate to remove taxa not analyzed and
+#repeat classes not evaluated
+library(tidyverse)
+library(ape)
+library(brms)
+landscape_file <- 
+  read.table("/path/to/combined_repeat_landscapes_for_64_species.txt")
+names<-c("accession_number","genome_size","species_name",
+         "class","family",seq(0,70))
+colnames(landscape_file)<-names
+landscape_file<- landscape_file %>% 
+  filter(!(species_name%in%c("Pseudis_tocantins","Scaphiopus_holbrookii",
+                             "Scaphiopus_couchii"))) %>% 
+  mutate(family=recode(family,"LTR/Gypsy"="Gypsy"),
+         class=recode(class,"SINE?"="SINE"))
+keep<-c("DNA","LINE","SINE","LTR")
+pivoted_landscape<-landscape_file %>% 
+  pivot_longer(cols="0":"70",names_to="per_div",values_to = "count") %>% 
+  filter(class!="Unknown") %>% filter(class %in% keep) %>%  
+  mutate(class=recode(class,"DNA"="DNA Transposon"))
+```
+
+```{r}
+#test for relationship between L1, Copia, and Penelope and genome size
+L1_frame<-landscape_file %>% 
+  mutate("0_10_div"=rowSums(landscape_file[,6:16])) %>% 
+  select("accession_number","genome_size","species_name","class","family",
+         "0_10_div") %>% filter(family=="L1") %>% 
+  group_by(genome_size,species_name, family) %>% 
+  summarise(grouped_count=sum(`0_10_div`)) %>% 
+  mutate(prop_genome=grouped_count/genome_size) %>% ungroup() %>% 
+  select(species_name,genome_size,prop_genome) %>% arrange(species_name)
+
+mod<-lm(prop_genome~log10(genome_size),data = L1_frame)
+summary(mod)
+
+L1_frame %>% ggplot(aes(x=log10(genome_size), y=prop_genome)) + geom_point()+ 
+  ylab("Proportion of Genome L1 10% divergence")
+
+Penelope_frame<-landscape_file %>% 
+  mutate("0_10_div"=rowSums(landscape_file[,6:16])) %>% 
+  select("accession_number","genome_size","species_name","class","family",
+         "0_10_div") %>% filter(family=="Penelope") %>% 
+  group_by(genome_size,species_name, family) %>% 
+  summarise(grouped_count=sum(`0_10_div`)) %>% 
+  mutate(prop_genome=grouped_count/genome_size) %>% ungroup() %>% 
+  select(species_name,genome_size,prop_genome) %>% arrange(species_name) 
+
+mod<-lm(prop_genome~log10(genome_size),data = Penelope_frame)
+summary(mod)
+
+Penelope_frame%>% ggplot(aes(x=log10(genome_size), y=prop_genome)) + 
+  geom_point() + ylab("Proportion of Genome Penelope 10% divergence")
+
+copia_frame<-landscape_file%>% 
+  mutate("0_10_div"=rowSums(landscape_file[,6:16])) %>% 
+  select("accession_number","genome_size","species_name","class","family",
+         "0_10_div") %>% filter(family=="Copia") %>% 
+  group_by(genome_size,species_name, family) %>% 
+  summarise(grouped_count=sum(`0_10_div`)) %>% 
+  mutate(prop_genome=grouped_count/genome_size) %>% ungroup() %>% 
+  select(species_name,genome_size,prop_genome) %>% arrange(species_name)
+
+mod<-lm(prop_genome~log10(genome_size),data = copia_frame)
+summary(mod)
+
+ggplot(data = copia_frame,aes(x=log10(genome_size), y=prop_genome)) + 
+  geom_point() + ylab("copia prop div 10%") + 
+  stat_smooth(method = "lm", col = "red") + 
+  ylab("Proportion of Genome Copia 10% divergence")
+```
+
+```{r}
+#read in amphibian tree and trim to keep analyzed species
+amphibian_tree<-read.tree("/path/to/altered_TreePL-Rooted_Anura_bestTree.tre")
+species_list<-landscape_file$species_name %>% unique()
+tree_filtered<-keep.tip(amphibian_tree, species_list)
+```
+
+```{r}
+#generate dataframes for modeling
+skewness_frame <- pivoted_landscape %>% 
+  group_by(species_name,genome_size) %>%
+  summarise(skewness=moments::skewness(count)) %>% ungroup()
+count_pol_components_per_genome <- read.table("/path/to/per_species_count_blastp_pol_components_hits.txt") %>% 
+  rename("count_of_pol_component_orfs"=V2, "species_name"=V1) %>% 
+  filter(!(species_name%in%c("Pseudis_tocantins","Scaphiopus_holbrookii",
+                             "Scaphiopus_couchii")))
+modeling_frame<-
+  left_join(landscape_file %>% 
+                            mutate("0_10_div"=
+                                     rowSums(landscape_file[,6:16])) %>% 
+              select("accession_number","genome_size","species_name","class",
+                     "family","0_10_div") %>% filter(family=="Gypsy") %>% 
+              group_by(genome_size,species_name, family) %>% 
+              summarise(grouped_count=sum(`0_10_div`)) %>% 
+              mutate(prop_genome=grouped_count/genome_size) %>% ungroup() %>% 
+              select(species_name,genome_size,prop_genome) %>% 
+              arrange(species_name), 
+            count_pol_components_per_genome,by="species_name") %>% 
+  replace(is.na(.), 0)
+
+```
+
+
+```{r}
+#model skewness, proportion of recent Ty3 elements, and count of pol components
+#against log10(genome size)
+cov_matrix<-ape::vcv.phylo(tree_filtered)
+
+model <- brm(
+  prop_genome ~ log10(genome_size) + (1|gr(species_name, cov = cov_matrix)),
+  data = modeling_frame,
+  family = gaussian(),
+  data2 = list(cov_matrix = cov_matrix),
+  iter = 10000
+)
+
+model_skewness <- brm(
+  skewness ~ log10(genome_size) + (1|gr(species_name, cov = cov_matrix)),
+  data = skewness_frame,
+  family = gaussian(),
+  data2 = list(cov_matrix = cov_matrix),
+  iter = 10000
+)
+
+model_full_length_elements_neg_binom <- brm(
+  count_of_pol_component_orfs ~ log10(genome_size) + (1|gr(species_name, cov = cov_matrix)),
+  data = modeling_frame,
+  family = negbinomial(),
+  data2 = list(cov_matrix = cov_matrix),
+  iter = 10000,
+  control = list(max_treedepth = 15,
+                 adapt_delta = 0.99)
+)
+
+```
+
+```{r}
+summary(model)
+summary(model_full_length_elements_neg_binom)
+summary(model_skewness)
+bayes_R2(model)
+bayes_R2(model_full_length_elements_neg_binom)
+```
+
+
+```{r}
+#Plot Figure 5 A and B models were fit on log10(genome size) but not plotted on
+#log scale
+new_frame<-data.frame(genome_size=
+                  seq(min(modeling_frame$genome_size),
+                      max(modeling_frame$genome_size),length.out=150))
+new_frame<-cbind(new_frame, fitted(model,re_formula = NA,newdata = new_frame))
+
+ggplot(data = new_frame,aes(x=genome_size, y=Estimate))+
+  geom_point(data = modeling_frame,aes(x=genome_size,y=prop_genome),
+             shape = 21, fill = "black", color = "black", stroke = 0.5,size = 2)+
+  geom_line(aes(x=genome_size, y=Estimate))+
+  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5), alpha=.3) + 
+  coord_cartesian(ylim = c(0,0.20)) + 
+  ylab("Proportion of Genome Composed\n of Recently Active Ty3 Elements")+
+  xlab(expression(log[10]("Genome Size"))) + 
+  scale_x_continuous(
+    labels = scales::label_number(scale = 1e-9),
+    name = "Genome Size (Gb)") + theme_minimal()
+
+new_frame<-data.frame(genome_size=
+                  seq(min(modeling_frame$genome_size),
+                      max(modeling_frame$genome_size),length.out=150))
+new_frame_neg_binomial<-cbind(new_frame, 
+                          fitted(model_full_length_elements_neg_binom,
+                                 re_formula = NA,newdata = new_frame))
+
+ggplot(data = new_frame_neg_binomial,aes(x=genome_size, y=Estimate)) + 
+  geom_line(aes(x=genome_size, y=Estimate)) + 
+  geom_point(data = modeling_frame,aes(x=genome_size,
+                                       y=count_of_pol_component_orfs))+
+  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5), alpha=.3)+ 
+  ylab("Count of Open Reading Frame Blastp\nHits to Retrovirus Pol Polyprotein")+
+  xlab(expression(log[10]("Genome Size"))) + theme_minimal() + 
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE),
+                     breaks = c(0, 40000, 80000, 120000)) +
+  scale_x_continuous(
+    labels = scales::label_number(scale = 1e-9),
+    name = "Genome Size (Gb)"
+  )
+```
+
+```{r}
+#Figure 2 C plot
+max_min_genome_size_species<-c("Spea_bombifrons","Rana_muscosa")
+species_name<-gsub("_", " ", pivoted_landscape$species_name)
+min_max_genome_size_frame<-pivoted_landscape %>% filter(family=="Gypsy") %>% 
+  filter(species_name%in%max_min_genome_size_species)
+
+min_max_genome_size_frame$species_name<-
+  gsub("_", " ", min_max_genome_size_frame$species_name)
+ggplot(data = min_max_genome_size_frame,aes(x=as.numeric(per_div), 
+                                         y=count/genome_size,fill=species_name))+
+    geom_bar(stat="identity") + ylab("Proportion of Ty3 Element in\nGenome")+ 
+  xlab("Divergence")+coord_cartesian(xlim = c(1,55)) + theme(
+    panel.background = element_blank(),
+    panel.border = element_rect(fill = NA, color = "black", size = 1),
+    axis.text.x = element_text(colour="black", size=12),
+    axis.title.y = element_text(size=16,face = "bold"),
+    axis.title.x = element_text(size=16,face = "bold"),
+    axis.text.y = element_text(colour="black", size=14),
+    strip.background = element_rect(fill=NA, colour="black",size=1),
+    legend.text = element_text(size = 13,face = "italic"), 
+    legend.title = element_text(size = 13, face = "bold")
+  ) +
+  labs(fill = "Species")+ scale_fill_viridis_d()
+```
+
+
+
