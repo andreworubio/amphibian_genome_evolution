@@ -1,0 +1,1148 @@
+---
+title: "PGLS"
+output: html_document
+date: "2025-03-02"
+---
+
+```{r}
+library(ape)
+library(nlme)
+library(dplyr)
+library(ggplot2)
+library(writexl)
+library(MuMIn)
+library(tidyr)
+library(cowplot)
+library(ggpubr)
+library(patchwork)
+
+```
+
+```{r}
+#Load your dataset (CSV file)
+df <- read.csv("combined_data/reshaped_with_species_final.csv", header = TRUE)  
+
+# Define assembly accessions to remove
+to_remove <- c("GCA_009364435.1", "GCA_023970735.1", "GCA_009364455.1")
+
+# Filter out rows with matching Assembly Accession
+noe <- df[!(df$Assembly.Accession %in% to_remove), ]
+
+head(noe)
+
+noe$total.TEs.counts <- noe$DNA.transposons.Count + noe$Retroelements.Count
+noe$total.TEs.length <- noe$DNA.transposons.Length..bp. + noe$Retroelements.Length..bp.
+noe$total.TEs.percentage_final <- ((noe$DNA.transposons.Length..bp. + noe$Retroelements.Length..bp.) / noe$Genome.size) * 100
+noe$Genome.size.Gb <- noe$Genome.size / 1e9
+
+# adding TE type proportion to genome size
+noe$SINEs.Percentage_2_genome <- (noe$SINEs.Length..bp./noe$Genome.size)*100
+noe$Penelope.Percentage_2_genome <- (noe$Penelope.Length..bp./noe$Genome.size)*100
+noe$CRE.SLACS.Percentage_2_genome <- (noe$CRE.SLACS.Length..bp./noe$Genome.size)*100
+noe$L2.CR1.Rex.Percentage_2_genome <- (noe$L2.CR1.Rex.Length..bp./noe$Genome.size)*100
+noe$R1.LOA.Jockey.Percentage_2_genome <- (noe$R1.LOA.Jockey.Length..bp./noe$Genome.size)*100
+noe$R2.R4.NeSL.Percentage_2_genome <- (noe$R2.R4.NeSL.Length..bp./noe$Genome.size)*100
+noe$RTE.Bov.B.Percentage_2_genome <- (noe$RTE.Bov.B.Length..bp./noe$Genome.size)*100
+noe$L1.CIN4.Percentage_2_genome <- (noe$L1.CIN4.Length..bp./noe$Genome.size)*100
+noe$Gypsy.DIRS1.Percentage_2_genome <- (noe$Gypsy.DIRS1.Length..bp./noe$Genome.size)*100
+noe$BEL.Pao.Percentage_2_genome <- (noe$BEL.Pao.Length..bp./noe$Genome.size)*100
+noe$Ty1.Copia.Percentage_2_genome <- (noe$Ty1.Copia.Length..bp./noe$Genome.size)*100
+noe$Retroviral.Percentage_2_genome <- (noe$Retroelements.Length..bp./noe$Genome.size)*100
+noe$hobo.Activator.Percentage_2_genome <- (noe$hobo.Activator.Length..bp./noe$Genome.size)*100
+noe$Tc1.IS630.Pogo.Percentage_2_genome <- (noe$Tc1.IS630.Pogo.Length..bp./noe$Genome.size)*100
+noe$MULE.MuDR.Percentage_2_genome <- (noe$MULE.MuDR.Length..bp./noe$Genome.size)*100
+noe$PiggyBac.Percentage_2_genome <- (noe$PiggyBac.Length..bp./noe$Genome.size)*100
+noe$Tourist.Harbinger.Percentage_2_genome <- (noe$Tourist.Harbinger.Length..bp./noe$Genome.size)*100
+noe$Other..Mirage..Percentage_2_genome <- (noe$Other..Mirage..Length..bp./noe$Genome.size)*100
+
+write_xlsx(noe, "combined_data/reshaped_with_species_final_Manuscript_version.xlsx")
+
+noe$species <- gsub(" ", "_", noe$Species)  # Standardize with underscores
+#data_clean$species <- tolower(data_clean$species)  # Convert to lowercase
+
+noe$species
+
+# Load your phylogenetic tree (Newick format)
+phylo_tree <- ape::read.tree("altered_TreePL-Rooted_Anura_bestTree.tre")
+phylo_tree
+plot(phylo_tree)
+
+#Standardize species names in both the dataset and the phylogeny
+phylo_tree$tip.label <- gsub(" ", "_", phylo_tree$tip.label)  # Standardize with underscores
+#phylo_tree$tip.label <- tolower(phylo_tree$tip.label)  # Convert to lowercase
+
+phylo_tree
+plot(phylo_tree)
+
+#Check if all species in data are present in the phylogenetic tree tips
+cat("Do species names match?", all(noe$species %in% phylo_tree$tip.label), "\n")
+
+#Identify species in data that are not in the phylogenetic tree tips
+non_matching_species <- setdiff(noe$species, phylo_tree$tip.label)
+
+#Display the non-matching species
+cat("Species not in phylogenetic tree tips:", non_matching_species, "\n")
+
+#Remove species from the tree and dataset if they do not match
+phylo_tree <- drop.tip(phylo_tree, setdiff(phylo_tree$tip.label, noe$species))
+
+phylo_tree
+plot(phylo_tree)
+
+#Check if all species in data are present in the phylogenetic tree tips
+cat("Do species names match?", all(noe$species %in% phylo_tree$tip.label), "\n")
+
+str(noe)
+
+#Exclude specific columns from conversion
+cols_to_convert <- setdiff(names(noe), c("species", "Assembly.Accession", "Species"))
+
+#Convert all the other columns to numeric (except 'species')
+noe[, cols_to_convert] <- lapply(noe[, cols_to_convert], as.numeric)
+str(noe)
+noe
+
+# Check tree labels
+phylo_tree$tip.label
+
+# Check species names in the dataset
+unique(noe$species)
+
+
+```
+
+```{r}
+# Perform I performed a PGLS using nlme and the Pagel's lambda correlation structure
+pgls_counts <- gls(Genome.size ~ SINEs.Count + Penelope.Count + CRE.SLACS.Count + L2.CR1.Rex.Count + R1.LOA.Jockey.Count + R2.R4.NeSL.Count + RTE.Bov.B.Count + L1.CIN4.Count + Gypsy.DIRS1.Count + BEL.Pao.Count + Ty1.Copia.Count + Retroviral.Count + hobo.Activator.Count + Tc1.IS630.Pogo.Count + MULE.MuDR.Count + PiggyBac.Count + Tourist.Harbinger.Count + Other..Mirage..Count + Contig.N50, data = noe, correlation = corPagel(1, phylo_tree, form = ~ species))  # pagel correlation
+
+summary(pgls_counts)
+anova(pgls_counts)
+print(pgls_counts)
+
+# Extract summary coefficients and preserve row names as a column
+summary_df <- as.data.frame(summary(pgls_counts)$tTable)
+summary_df$Variable <- rownames(summary_df)
+summary_df <- summary_df[, c("Variable", names(summary_df)[1:4])]  # Reorder columns
+
+# Extract ANOVA table (usually already has row names as a column)
+anova_df <- as.data.frame(anova(pgls_counts))
+anova_df$Term <- rownames(anova_df)
+anova_df <- anova_df[, c("Term", names(anova_df)[1:(ncol(anova_df)-1)])]  # Reorder columns
+
+# Write to Excel with variable names included
+write_xlsx(
+  list(
+    Coefficients = summary_df,
+    ANOVA = anova_df
+  ),
+  path = "results/pgls_results_with_names.xlsx"
+)
+
+# Extract p-values from the summary of the PGLS model
+p_values_counts <- summary(pgls_counts)$tTable[, 4]  # Extracting the p-values from the tTable (4th column)
+
+# Apply a multiple testing correction (e.g., Benjamini-Hochberg (BH) method for FDR control)
+adjusted_pvalues_counts <- p.adjust(p_values_counts, method = "BH")
+
+# Print adjusted p-values
+adjusted_pvalues_counts
+
+# Create a data frame with the adjusted p-values
+adjusted_pvalues_df_counts <- data.frame(
+  TE_Class = names(p_values_counts),  # Add names of the TE classes as a column
+  P_Value = p_values_counts,          # Original p-values
+  Adjusted_P_Value = adjusted_pvalues_counts  # Adjusted p-values
+)
+
+# Export to Excel
+write_xlsx(adjusted_pvalues_df_counts, "results/number_of_elements_adjusted_pvalues.xlsx")
+
+
+# Get the summary of the model to extract coefficients and p-values
+model_summary_noe <- summary(pgls_counts)
+
+# Extract the coefficients and p-values
+coefficients_noe <- model_summary_noe$tTable
+
+# View the coefficients (the first column should be the estimates, and the second column p-values)
+head(coefficients_noe)
+
+# Filter the significant TEs (e.g., p-value < 0.05)
+significant_TEs_noe <- coefficients_noe[coefficients_noe[, "p-value"] < 0.05, ]
+
+significant_TEs_noe
+
+
+te_cols <- grep(".Count$", names(noe), value = TRUE)
+r2_results <- data.frame(TE = character(), R2 = numeric(), stringsAsFactors = FALSE)
+
+# Fit null model once
+model_null <- gls(Genome.size ~ 1, data = noe, correlation = corPagel(1, phylo_tree, form = ~ species))
+var_null <- summary(model_null)$sigma^2
+
+# Loop through TE predictors
+for (te in te_cols) {
+  cat("Fitting model for:", te, "\n")
+  
+  # Skip constant or nearly constant predictors
+  if (length(unique(na.omit(noe[[te]]))) < 3) {
+    cat(" -> Skipped (not enough variation)\n")
+    next
+  }
+  
+  formula <- as.formula(paste("Genome.size ~", te))
+  
+  # Try fitting the model; if it fails, skip
+  tryCatch({
+    model <- gls(formula, data = noe, correlation = corPagel(1, phylo_tree, form = ~ species))
+    var_full <- summary(model)$sigma^2
+    r2_pseudo <- 1 - (var_full / var_null)
+    r2_results <- rbind(r2_results, data.frame(TE = te, R2 = r2_pseudo))
+  }, error = function(e) {
+    cat(" -> Model failed:", conditionMessage(e), "\n")
+  })
+}
+
+# View R² values
+print(r2_results)
+
+library(writexl)
+write_xlsx(r2_results, "results/number_of_elements_TE_pseudo_R2_results.xlsx")
+
+```
+
+
+
+```{r}
+# Perform a PGLS using nlme and the Pagel's lambda correlation structure
+pgls_Length <- gls(Genome.size.Gb ~ SINEs.Length..bp. + Penelope.Length..bp. + CRE.SLACS.Length..bp. + L2.CR1.Rex.Length..bp. + R1.LOA.Jockey.Length..bp. + R2.R4.NeSL.Length..bp. + RTE.Bov.B.Length..bp. + L1.CIN4.Length..bp. + Gypsy.DIRS1.Length..bp. + BEL.Pao.Length..bp. + Ty1.Copia.Length..bp. + Retroviral.Length..bp. + hobo.Activator.Length..bp. + Tc1.IS630.Pogo.Length..bp. + MULE.MuDR.Length..bp. + PiggyBac.Length..bp. + Tourist.Harbinger.Length..bp. + Other..Mirage..Length..bp. + Contig.N50, data = noe, correlation = corPagel(1, phylo_tree, form = ~ species))  # pagel correlation
+
+summary(pgls_Length)
+anova(pgls_Length)
+print(pgls_Length)
+
+
+# Extract summary coefficients and preserve row names as a column
+summary_Length <- as.data.frame(summary(pgls_Length)$tTable)
+summary_Length$Variable <- rownames(summary_df)
+summary_Length <- summary_Length[, c("Variable", names(summary_Length)[1:4])]  # Reorder columns
+
+# Extract ANOVA table (usually already has row names as a column)
+anova_Length <- as.data.frame(anova(pgls_Length))
+anova_Length$Term <- rownames(anova_Length)
+anova_Length <- anova_Length[, c("Term", names(anova_Length)[1:(ncol(anova_Length)-1)])]  # Reorder columns
+
+# Write to Excel with variable names included
+write_xlsx(
+  list(
+    Coefficients = summary_Length,
+    ANOVA = anova_Length
+  ),
+  path = "results/Length_of_elements_results_with_names.xlsx"
+)
+
+# Extract p-values from the summary of the PGLS model
+p_values_Length <- summary(pgls_Length)$tTable[, 4]  # Extracting the p-values from the tTable (4th column)
+
+# Apply a multiple testing correction (e.g., Benjamini-Hochberg (BH) method for FDR control)
+adjusted_pvalues_Length <- p.adjust(p_values_Length, method = "BH")
+
+# Print adjusted p-values
+adjusted_pvalues_Length
+
+# Create a data frame with the adjusted p-values
+adjusted_pvalues_df_Length <- data.frame(
+  TE_Class = names(p_values_Length),  # Add names of the TE classes as a column
+  P_Value = p_values_Length,          # Original p-values
+  Adjusted_P_Value = adjusted_pvalues_Length  # Adjusted p-values
+)
+
+# Export to Excel
+write_xlsx(adjusted_pvalues_df_Length, "results/Length_of_elements_adjusted_pvalues.xlsx")
+
+#calculating Rsquare
+library(nlme)
+library(writexl)
+
+# Get all TE length predictor column names (assuming they end in ".Length..bp.")
+te_length_cols <- grep(".Length..bp.$", names(noe), value = TRUE)
+
+# Prepare results dataframe
+r2_results_length <- data.frame(TE = character(), R2 = numeric(), stringsAsFactors = FALSE)
+
+# Fit null model once (intercept-only, same correlation structure)
+model_null <- gls(
+  Genome.size ~ 1,
+  data = noe,
+  correlation = corPagel(1, phylo_tree, form = ~ species)
+)
+var_null <- summary(model_null)$sigma^2
+
+# Loop through each TE length predictor
+for (te in te_length_cols) {
+  cat("Fitting model for:", te, "\n")
+  
+  # Skip constant or nearly constant predictors
+  if (length(unique(na.omit(noe[[te]]))) < 3) {
+    cat(" -> Skipped (not enough variation)\n")
+    next
+  }
+  
+  # Fit the model with TE length
+  formula <- as.formula(paste("Genome.size ~", te))
+  
+  tryCatch({
+    model <- gls(
+      formula,
+      data = noe,
+      correlation = corPagel(1, phylo_tree, form = ~ species)
+    )
+    var_full <- summary(model)$sigma^2
+    r2_pseudo <- 1 - (var_full / var_null)
+    
+    r2_results_length <- rbind(r2_results_length, data.frame(TE = te, R2 = r2_pseudo))
+  }, error = function(e) {
+    cat(" -> Model failed:", conditionMessage(e), "\n")
+  })
+}
+
+# Print and save the results
+print(r2_results_length)
+
+# Save as Excel
+write_xlsx(r2_results_length, "results/length_TE_pseudo_R2_results.xlsx")
+```
+
+
+```{r}
+# Perform a PGLS using nlme and the Pagel's lambda correlation structure
+pgls_Percentage <- gls(Genome.size.Gb ~ SINEs.Percentage_2_genome + Penelope.Percentage_2_genome + CRE.SLACS.Percentage_2_genome + L2.CR1.Rex.Percentage_2_genome + R1.LOA.Jockey.Percentage_2_genome + R2.R4.NeSL.Percentage_2_genome + RTE.Bov.B.Percentage_2_genome + L1.CIN4.Percentage_2_genome + Gypsy.DIRS1.Percentage_2_genome + BEL.Pao.Percentage_2_genome + Ty1.Copia.Percentage_2_genome + Retroviral.Percentage_2_genome + hobo.Activator.Percentage_2_genome + Tc1.IS630.Pogo.Percentage_2_genome + MULE.MuDR.Percentage_2_genome + PiggyBac.Percentage_2_genome + Tourist.Harbinger.Percentage_2_genome + Other..Mirage..Percentage_2_genome + Contig.N50, data = noe, correlation = corPagel(1, phylo_tree, form = ~ species))  # pagel correlation
+
+summary(pgls_Percentage)
+anova(pgls_Percentage)
+print(pgls_Percentage)
+
+# Extract summary coefficients and preserve row names as a column
+summary_Percentage <- as.data.frame(summary(pgls_Percentage)$tTable)
+summary_Percentage$Variable <- rownames(summary_Percentage)
+summary_Percentage <- summary_Percentage[, c("Variable", names(summary_Percentage)[1:4])]  # Reorder columns
+
+# Extract ANOVA table (usually already has row names as a column)
+anova_Percentage <- as.data.frame(anova(pgls_Percentage))
+anova_Percentage$Term <- rownames(anova_Percentage)
+anova_Percentage <- anova_Percentage[, c("Term", names(anova_Percentage)[1:(ncol(anova_Percentage)-1)])]  # Reorder columns
+
+# Write to Excel with variable names included
+write_xlsx(
+  list(
+    Coefficients = summary_Percentage,
+    ANOVA = anova_Percentage
+  ),
+  path = "results/Percentage_of_elements_results_with_names.xlsx"
+)
+
+
+# Extract p-values from the summary of the PGLS model
+p_values_Percentage <- summary(pgls_Percentage)$tTable[, 4]  # Extracting the p-values from the tTable (4th column)
+
+# Apply a multiple testing correction
+adjusted_pvalues_Percentage <- p.adjust(p_values_Percentage, method = "BH")
+
+# Print adjusted p-values
+adjusted_pvalues_Percentage
+
+# Create a data frame with the adjusted p-values
+adjusted_pvalues_df_Percentage <- data.frame(
+  TE_Class = names(p_values_Percentage),  # Add names of the TE classes as a column
+  P_Value = p_values_Percentage,          # Original p-values
+  Adjusted_P_Value = adjusted_pvalues_Percentage  # Adjusted p-values
+)
+
+# Export to Excel
+write_xlsx(adjusted_pvalues_df_Percentage, "results/Percentage_of_elements_adjusted_pvalues.xlsx")
+
+# Get all TE length predictor column names 
+te_per_cols <- grep(".Percentage_2_genome$", names(noe), value = TRUE)
+
+# Prepare results dataframe
+r2_results_length <- data.frame(TE = character(), R2 = numeric(), stringsAsFactors = FALSE)
+
+# Fit null model once (intercept-only, same correlation structure)
+model_null <- gls(
+  Genome.size ~ 1,
+  data = noe,
+  correlation = corPagel(1, phylo_tree, form = ~ species)
+)
+var_null <- summary(model_null)$sigma^2
+
+# Loop through each TE length predictor
+for (te in te_per_cols) {
+  cat("Fitting model for:", te, "\n")
+  
+  # Skip constant or nearly constant predictors
+  if (length(unique(na.omit(noe[[te]]))) < 3) {
+    cat(" -> Skipped (not enough variation)\n")
+    next
+  }
+  
+  # Fit the model with TE length
+  formula <- as.formula(paste("Genome.size ~", te))
+  
+  tryCatch({
+    model <- gls(
+      formula,
+      data = noe,
+      correlation = corPagel(1, phylo_tree, form = ~ species)
+    )
+    var_full <- summary(model)$sigma^2
+    r2_pseudo <- 1 - (var_full / var_null)
+    
+    r2_results_length <- rbind(r2_results_length, data.frame(TE = te, R2 = r2_pseudo))
+  }, error = function(e) {
+    cat(" -> Model failed:", conditionMessage(e), "\n")
+  })
+}
+
+# Print and save the results
+print(r2_results_length)
+
+# Save as Excel
+write_xlsx(r2_results_length, "results/length_TE_pseudo_R2_results.xlsx")
+
+```
+
+# violin plot
+```{r}
+element_violin <- noe[, c("Genome.size.Gb", "SINEs.Count", "Penelope.Count", "CRE.SLACS.Count", "L2.CR1.Rex.Count", "R1.LOA.Jockey.Count", "R2.R4.NeSL.Count",  "RTE.Bov.B.Count", "L1.CIN4.Count", "Gypsy.DIRS1.Count", "BEL.Pao.Count", "Ty1.Copia.Count", "Retroviral.Count", "hobo.Activator.Count", "Tc1.IS630.Pogo.Count", "MULE.MuDR.Count", "PiggyBac.Count", "Tourist.Harbinger.Count", "Other..Mirage..Count")]
+
+# Pivot longer: get TE family as one column
+df_long <- element_violin %>%
+  pivot_longer(
+    cols = ends_with(".Count"),  
+    names_to = "TE_Family",
+    values_to = "TE_Count"
+  )
+
+df_long
+
+# Replace periods with underscores in the TE_Type column
+df_long$TE_Family <- gsub("\\.", "/", df_long$TE_Family)
+
+df_long
+
+df_long$TE_Family <- gsub("Gypsy/DIRS1/Count", "Ty3/DIRS1", df_long$TE_Family)
+df_long$TE_Family <- gsub("RTE/Bov/B/Count", "RTE/Bov-B", df_long$TE_Family)
+df_long$TE_Family <- gsub("hobo/Activator/Count", "hobo-Activator", df_long$TE_Family)
+df_long$TE_Family <- gsub("Tc1/IS630/Pogo/Count", "Tc1-IS630-Pogo", df_long$TE_Family)
+df_long$TE_Family <- gsub("En/Spm/Count", "En-Spm", df_long$TE_Family)
+df_long$TE_Family <- gsub("MULE/MuDR/Count", "MULE-MuDR", df_long$TE_Family)
+df_long$TE_Family <- gsub("CRE/SLACS/Count", "CRE/SLACS", df_long$TE_Family)
+df_long$TE_Family <- gsub("BEL/Pao/Count", "BEL/Pao", df_long$TE_Family)
+df_long$TE_Family <- gsub("L1/CIN4/Count", "L1/CIN4", df_long$TE_Family)
+df_long$TE_Family <- gsub("L2/CR1/Rex/Count", "L2/CR1/Rex", df_long$TE_Family)
+df_long$TE_Family <- gsub("Penelope/Count", "Penelope", df_long$TE_Family)
+df_long$TE_Family <- gsub("PiggyBac/Count", "PiggyBac", df_long$TE_Family)
+df_long$TE_Family <- gsub("Ty1/Copia/Count", "Ty1/Copia", df_long$TE_Family)
+df_long$TE_Family <- gsub("Tourist/Harbinger/Count", "Tourist/Harbinger", df_long$TE_Family)
+df_long$TE_Family <- gsub("R1/LOA/Jockey/Count", "R1/LOA/Jockey", df_long$TE_Family)
+df_long$TE_Family <- gsub("R2/R4/NeSL/Count", "R2/R4/NeSL", df_long$TE_Family)
+df_long$TE_Family <- gsub("SINEs/Count", "SINEs", df_long$TE_Family)
+df_long$TE_Family <- gsub("Retroviral/Count", "Retroviral", df_long$TE_Family)
+df_long$TE_Family <- gsub("Other//Mirage//Count", "Other", df_long$TE_Family)
+
+
+
+ordered_families <- c(
+  "SINEs", "Penelope", "CRE/SLACS", "L2/CR1/Rex", "R1/LOA/Jockey", "R2/R4/NeSL",
+  "RTE/Bov-B", "L1/CIN4", "Ty3/DIRS1", "BEL/Pao", "Ty1/Copia", "Retroviral",
+  "hobo-Activator", "Tc1-IS630-Pogo", "MULE-MuDR", "PiggyBac", 
+  "Tourist/Harbinger", "Other"
+)
+
+# Apply this order as a factor
+df_long$TE_Family <- factor(df_long$TE_Family, levels = ordered_families)
+
+
+
+figure_2b <- ggplot(df_long, aes(x = TE_Family, y = log10(TE_Count))) + 
+  geom_violin(width = 1, trim = TRUE, outlier.shape = NA, fill = "grey", color = "black") +  
+  #geom_boxplot(width = 0.05) +
+  geom_jitter(width = 0.1, color = "black", size = .05) +  
+  labs(x = "", y = "Log10 (Number of\nTEs in the genome)") +
+  scale_y_continuous(limits = c(0, 7)) +
+  theme(axis.line = element_line(),
+        axis.title.y = element_text(size = 102),
+        panel.grid.major.x = element_blank())+ 
+  guides(fill = FALSE) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+figure_2b
+
+figure_2b_labeled <- ggdraw(figure_2b) +
+  draw_label("B)", x = 0.01, y = 0.99, hjust = .5, vjust = -2, size = 10)
+
+figure_2b_labeled
+
+ggsave("figure_2b.pdf", width = 6, height = 6, path = "publication/figures/")
+
+```
+
+# Stack bar
+```{r}
+# Define the columns for individual TEs you want to show separately
+individual_te_cols <- c(
+  "Ty1.Copia.Length..bp.",
+  "L1.CIN4.Length..bp.",
+  "Gypsy.DIRS1.Length..bp.",
+  "hobo.Activator.Length..bp."
+)
+
+# Define columns to be grouped as Other TE
+other_te_cols <- c(
+  "SINEs.Length..bp.",
+  "Penelope.Length..bp.",
+  "CRE.SLACS.Length..bp.",
+  "L2.CR1.Rex.Length..bp.",
+  "R1.LOA.Jockey.Length..bp.",
+  "R2.R4.NeSL.Length..bp.",
+  "RTE.Bov.B.Length..bp.",
+  "BEL.Pao.Length..bp.",
+  "Retroviral.Length..bp.",
+  "Tc1.IS630.Pogo.Length..bp.",
+  "MULE.MuDR.Length..bp.",
+  "PiggyBac.Length..bp.",
+  "Tourist.Harbinger.Length..bp.",
+  "Other..Mirage..Length..bp."
+)
+
+# Select relevant columns from your dataset
+count_data <- noe %>%
+  select(Species, Genome.size, all_of(individual_te_cols), all_of(other_te_cols))
+
+# Calculate sum of Other TE lengths per species
+count_data <- count_data %>%
+  mutate(Other_TE = rowSums(select(., all_of(other_te_cols)), na.rm = TRUE))
+
+# Calculate total TE and Non-TE
+count_data <- count_data %>%
+  mutate(
+    Total_TE = rowSums(select(., all_of(individual_te_cols)), na.rm = TRUE) + Other_TE,
+    Non_TE = Genome.size - Total_TE
+  )
+
+# Prepare data for plotting
+te_long <- count_data %>%
+  select(Species, all_of(individual_te_cols), Other_TE, Non_TE) %>%
+  pivot_longer(
+    cols = -Species,
+    names_to = "Repeat_Type",
+    values_to = "Length"
+  ) %>%
+  mutate(Length = Length / 1e9)  
+
+# Clean up Repeat_Type labels
+te_long$Repeat_Type <- recode(te_long$Repeat_Type,
+                              "Ty1.Copia.Length..bp." = "Ty1/Copia",
+                              "L1.CIN4.Length..bp." = "L1/CIN4",
+                              "Gypsy.DIRS1.Length..bp." = "Ty3/DIRS1",
+                              "hobo.Activator.Length..bp." = "hobo-Activator",
+                              "Other_TE" = "Other TE",
+                              "Non_TE" = "Non-TE")
+
+# Control stacking order
+te_long$Repeat_Type <- factor(te_long$Repeat_Type, levels = c(
+  "Non-TE",
+  "Other TE",
+  "Ty1/Copia",
+  "L1/CIN4",
+  "Ty3/DIRS1",
+  "hobo-Activator"
+))
+
+# Sort species
+species_order <- count_data %>%
+  arrange(desc(Genome.size)) %>%
+  pull(Species)
+
+te_long$Species <- factor(te_long$Species, levels = species_order)
+
+# Define colors
+colors <- c(
+  "Non-TE" = "#CCCCCC",
+  "Other TE" = "springgreen2",
+  "Ty1/Copia" = "#fc8d62",
+  "L1/CIN4" = "#8da0cb",
+  "Ty3/DIRS1" = "#e78ac3",
+  "hobo-Activator" = "#a6cee3"
+)
+
+# Italicize species names
+species_labels <- setNames(
+  lapply(levels(te_long$Species), function(x) bquote(italic(.(x)))),
+  levels(te_long$Species)
+)
+
+# Plot
+figure_2a <- ggplot(te_long, aes(x = Species, y = Length, fill = Repeat_Type)) +
+  geom_bar(stat = "identity", position = position_stack(reverse = TRUE), width = 0.8) +
+  coord_flip() +
+  scale_x_discrete(labels = species_labels) +
+  scale_fill_manual(values = colors, name = "Genome Composition") +
+  labs(
+    x = "",
+    y = "Genome Size (Gbp)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 8, face = "bold", hjust = 0),
+    axis.title = element_text(size = 8),
+    legend.title = element_text(size = 8),
+    legend.text = element_text(size = 8),
+    legend.position = "bottom",
+    legend.direction = "horizontal"
+  )
+
+figure_2a_labeled <- ggdraw(figure_2a) +
+  draw_label("A)", x = 0.01, y = 0.99, hjust = .5, vjust = 1, size = 10)
+
+# Print and save
+print(figure_2a_labeled)
+
+ggsave("publication/figures/genome_composition_by_TE_Gbp.pdf", plot = figure_2a,
+       width = 12, height = 10, units = "in", dpi = 300)
+```
+
+
+#final scatter plot
+```{r}
+# Define pseudo R² values 
+r2_count <- 0.71
+r2_length <- 0.97
+r2_percent <- 0.61
+
+# Define columns
+te_columns.count <- c("total.TEs.counts")
+te_columns.length <- c("total.TEs.length")
+te_columns.percent <- c("total.TEs.percentage_final")
+
+# Create data for each plot
+plot_data.count <- noe %>%
+  mutate(Selected_TE_Length = rowSums(select(., all_of(te_columns.count)), na.rm = TRUE))
+
+plot_data.length <- noe %>%
+  mutate(Selected_TE_Length = rowSums(select(., all_of(te_columns.length)), na.rm = TRUE))
+
+plot_data.percent <- noe %>%
+  mutate(Selected_TE_Length = rowSums(select(., all_of(te_columns.percent)), na.rm = TRUE))
+
+# Plot A: TE count
+a <- ggplot(plot_data.count, aes(x = Selected_TE_Length, y = Genome.size.Gb)) +
+  geom_point(shape = 21, fill = "grey", color = "black", stroke = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  labs(x = "TE count", y = "Genome Size\n(Gbp)") +
+  annotate("text", x = -Inf, y = Inf,
+           label = paste0("Pseudo R² = ", round(r2_count, 3)),
+           hjust = -0.05, vjust = 2.6, size = 3) +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_text(margin = margin(r = 20)),
+    axis.title.x = element_text(margin = margin(t = 15))
+  )
+
+a_labeled <- ggdraw(a) +
+  draw_label("C)", x = 0.01, y = 0.99, hjust = .5, vjust = -1, size = 10)
+
+a_labeled
+
+# Plot B: TE length
+b <- ggplot(plot_data.length, aes(x = Selected_TE_Length, y = Genome.size.Gb)) +
+  geom_point(shape = 21, fill = "grey", color = "black", stroke = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  labs(x = "TE length", y = "") +
+  annotate("text", x = -Inf, y = Inf,
+           label = paste0("Pseudo R² = ", round(r2_length, 3)),
+           hjust = -0.05, vjust = 2.6, size = 3) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(margin = margin(t = 15))
+  )
+
+b_labeled <- ggdraw(b) +
+  draw_label("D)", x = 0.01, y = 0.99, hjust = 0, vjust = -1, size = 10)
+
+# Plot C: TE percentage
+c <- ggplot(plot_data.percent, aes(x = Selected_TE_Length, y = Genome.size.Gb)) +
+  geom_point(shape = 21, fill = "grey", color = "black", stroke = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  labs(x = "Percent TE", y = "") +
+  annotate("text", x = -Inf, y = Inf,
+           label = paste0("Pseudo R² = ", round(r2_percent, 3)),
+           hjust = -0.05, vjust = 2.6, size = 3) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(margin = margin(t = 15))
+  )
+
+c_labeled <- ggdraw(c) +
+  draw_label("E)", x = 0.01, y = 0.99, hjust = -1, vjust = -1, size = 10)
+
+
+# Combine horizontally
+figure_2c <- a_labeled + b_labeled + c_labeled + plot_layout(ncol = 3)
+print(figure_2c)
+
+# Save plot to file
+ggsave("publication/figures/combined_three_plots_with_pseudor2.pdf",
+       plot = figure_2c,
+       width = 15, height = 5, units = "in", dpi = 300)
+
+```
+
+```{r}
+combined_plot <- plot_grid(figure_2a_labeled, figure_2b_labeled, figure_2c,
+                           ncol = 1, 
+                           rel_heights = c(4., 1.2, 1),
+                           label_size = 14,
+                           label_y = c(1, 1.25, 1.02)) 
+
+combined_plot
+
+
+
+# Save the figure (high resolution)
+ggsave("publication/figures/final_figure/Figure_2.png", combined_plot,
+       width = 8, height = 12, dpi = 900)
+hujkh
+```
+
+```{r}
+# r2 for the full model
+null_model <- gls(Genome.size.Gb ~ 1, data = noe, correlation = corPagel(1, phylo_tree, form = ~ species))
+
+full_model_percent <- gls(Genome.size.Gb ~ total.TEs.percentage_final + Contig.N50,
+                  data = noe,
+                  correlation = corPagel(1, phylo_tree, form = ~ species))
+
+summary(full_model_percent)
+
+var_full_percent <- summary(full_model_percent)$sigma^2
+var_null <- summary(null_model)$sigma^2
+
+pseudo_R2_full_percent <- 1 - (var_full_percent / var_null)
+
+pseudo_R2_full_percent
+
+
+# Extract summary coefficients and preserve row names as a column
+summary_Percentage <- as.data.frame(summary(full_model_percent)$tTable)
+summary_Percentage$Variable <- rownames(summary_Percentage)
+summary_Percentage <- summary_Percentage[, c("Variable", names(summary_Percentage)[1:4])]  # Reorder columns
+
+# Extract ANOVA table 
+anova_Percentage <- as.data.frame(anova(full_model_percent))
+anova_Percentage$Term <- rownames(anova_Percentage)
+anova_Percentage <- anova_Percentage[, c("Term", names(anova_Percentage)[1:(ncol(anova_Percentage)-1)])]  # Reorder columns
+
+# Write to Excel with variable names included
+write_xlsx(
+  list(
+    Coefficients = summary_Percentage,
+    ANOVA = anova_Percentage
+  ),
+  path = "results/full_model_Percentage.xlsx"
+)
+
+
+# Extract p-values from the summary of the PGLS model
+p_values_Percentage <- summary(full_model_percent)$tTable[, 4]  # Extracting the p-values from the tTable (4th column)
+
+# Apply a multiple testing correction 
+adjusted_pvalues_Percentage <- p.adjust(p_values_Percentage, method = "BH")
+
+# Print adjusted p-values
+adjusted_pvalues_Percentage
+
+# Create a data frame with the adjusted p-values
+adjusted_pvalues_df_Percentage <- data.frame(
+  TE_Class = names(p_values_Percentage),  # Add names of the TE classes as a column
+  P_Value = p_values_Percentage,          # Original p-values
+  Adjusted_P_Value = adjusted_pvalues_Percentage  # Adjusted p-values
+)
+
+# Export to Excel
+write_xlsx(adjusted_pvalues_df_Percentage, "results/full_model_percent_adjusted_pvalues.xlsx")
+
+
+full_model_count <- gls(Genome.size.Gb ~ total.TEs.counts + Contig.N50,
+                  data = noe,
+                  correlation = corPagel(1, phylo_tree, form = ~ species))
+
+summary(full_model_count)
+
+
+var_full_count <- summary(full_model_count)$sigma^2
+
+pseudo_R2_full_count <- 1 - (var_full_count / var_null)
+
+pseudo_R2_full_count
+
+# Extract summary coefficients and preserve row names as a column
+summary_df <- as.data.frame(summary(full_model_count)$tTable)
+summary_df$Variable <- rownames(summary_df)
+summary_df <- summary_df[, c("Variable", names(summary_df)[1:4])]  # Reorder columns
+
+# Extract ANOVA table 
+anova_df <- as.data.frame(anova(full_model_count))
+anova_df$Term <- rownames(anova_df)
+anova_df <- anova_df[, c("Term", names(anova_df)[1:(ncol(anova_df)-1)])]  # Reorder columns
+
+# Write to Excel with variable names included
+write_xlsx(
+  list(
+    Coefficients = summary_df,
+    ANOVA = anova_df
+  ),
+  path = "results/full_model_count_results_with_names.xlsx"
+)
+
+# Extract p-values from the summary of the PGLS model
+p_values_counts <- summary(full_model_count)$tTable[, 4]  # Extracting the p-values from the tTable (4th column)
+
+# Apply a multiple testing correction 
+adjusted_pvalues_counts <- p.adjust(p_values_counts, method = "BH")
+
+# Print adjusted p-values
+adjusted_pvalues_counts
+
+# Create a data frame with the adjusted p-values
+adjusted_pvalues_df_counts <- data.frame(
+  TE_Class = names(p_values_counts),  # Add names of the TE classes as a column
+  P_Value = p_values_counts,          # Original p-values
+  Adjusted_P_Value = adjusted_pvalues_counts  # Adjusted p-values
+)
+
+# Export to Excel
+write_xlsx(adjusted_pvalues_df_counts, "results/full_model_count_adjusted_pvalues.xlsx")
+
+
+full_model_length <- gls(Genome.size.Gb ~ total.TEs.length + Contig.N50,
+                  data = noe,
+                  correlation = corPagel(1, phylo_tree, form = ~ species))
+
+summary(full_model_length)
+
+var_full_length <- summary(full_model_length)$sigma^2
+
+pseudo_R2_full_length <- 1 - (var_full_length / var_null)
+
+pseudo_R2_full_length
+
+
+
+summary_Percentage <- as.data.frame(summary(full_model_percent)$tTable)
+summary_Percentage$Variable <- rownames(summary_Percentage)
+summary_Percentage <- summary_Percentage[, c("Variable", names(summary_Percentage)[1:4])]  # Reorder columns
+
+
+# Extract summary coefficients and preserve row names as a column
+summary_Length <- as.data.frame(summary(full_model_length)$tTable)
+summary_Length$Variable <- rownames(summary_Length)
+summary_Length <- summary_Length[, c("Variable", names(summary_Length)[1:4])]  # Reorder columns
+
+# Extract ANOVA table 
+anova_Length <- as.data.frame(anova(full_model_length))
+anova_Length$Term <- rownames(anova_Length)
+anova_Length <- anova_Length[, c("Term", names(anova_Length)[1:(ncol(anova_Length)-1)])]  # Reorder columns
+
+# Write to Excel with variable names included
+write_xlsx(
+  list(
+    Coefficients = summary_Length,
+    ANOVA = anova_Length
+  ),
+  path = "results/full_model_length_length_results_with_names.xlsx"
+)
+
+# Extract p-values from the summary of the PGLS model
+p_values_Length <- summary(full_model_length)$tTable[, 4]  # Extracting the p-values from the tTable (4th column)
+
+# Apply a multiple testing correction 
+adjusted_pvalues_Length <- p.adjust(p_values_Length, method = "BH")
+
+# Print adjusted p-values
+adjusted_pvalues_Length
+
+# Create a data frame with the adjusted p-values
+adjusted_pvalues_df_Length <- data.frame(
+  TE_Class = names(p_values_Length),  # Add names of the TE classes as a column
+  P_Value = p_values_Length,          # Original p-values
+  Adjusted_P_Value = adjusted_pvalues_Length  # Adjusted p-values
+)
+
+# Export to Excel
+write_xlsx(adjusted_pvalues_df_Length, "results/full_model_length_adjusted_pvalues.xlsx")
+
+
+```
+
+
+```{r}
+#length
+null_model <- gls(Genome.size.Gb ~ 1, data = noe, correlation = corPagel(1, phylo_tree, form = ~ species))
+
+model_length <- gls(Genome.size.Gb ~ SINEs.Length..bp. + Penelope.Length..bp. + CRE.SLACS.Length..bp. + L2.CR1.Rex.Length..bp. + R1.LOA.Jockey.Length..bp. + R2.R4.NeSL.Length..bp. + RTE.Bov.B.Length..bp. + L1.CIN4.Length..bp. + Gypsy.DIRS1.Length..bp. + BEL.Pao.Length..bp. + Ty1.Copia.Length..bp. + Retroviral.Length..bp. + hobo.Activator.Length..bp. + Tc1.IS630.Pogo.Length..bp. + MULE.MuDR.Length..bp. + PiggyBac.Length..bp. + Tourist.Harbinger.Length..bp. + Other..Mirage..Length..bp. + Contig.N50, data = noe, correlation = corPagel(1, phylo_tree, form = ~ species))  # pagel correlation
+
+summary(model_length)
+anova(model_length)
+print(model_length)
+
+var_full_length <- summary(model_length)$sigma^2
+
+pseudo_R2_full_length <- 1 - (var_full_length / var_null)
+
+pseudo_R2_full_length
+
+#count
+model_counts <- gls(Genome.size ~ SINEs.Count + Penelope.Count + CRE.SLACS.Count + L2.CR1.Rex.Count + R1.LOA.Jockey.Count + R2.R4.NeSL.Count + RTE.Bov.B.Count + L1.CIN4.Count + Gypsy.DIRS1.Count + BEL.Pao.Count + Ty1.Copia.Count + Retroviral.Count + hobo.Activator.Count + Tc1.IS630.Pogo.Count + MULE.MuDR.Count + PiggyBac.Count + Tourist.Harbinger.Count + Other..Mirage..Count + Contig.N50, data = noe, correlation = corPagel(1, phylo_tree, form = ~ species))  # pagel correlation
+
+var_counts <- summary(model_counts)$sigma^2
+
+pseudo_R2_counts <- 1 - (var_counts / var_null)
+
+pseudo_R2_counts
+
+
+model_Percentage <- gls(Genome.size.Gb ~ SINEs.Percentage_2_genome + Penelope.Percentage_2_genome + CRE.SLACS.Percentage_2_genome + L2.CR1.Rex.Percentage_2_genome + R1.LOA.Jockey.Percentage_2_genome + R2.R4.NeSL.Percentage_2_genome + RTE.Bov.B.Percentage_2_genome + L1.CIN4.Percentage_2_genome + Gypsy.DIRS1.Percentage_2_genome + BEL.Pao.Percentage_2_genome + Ty1.Copia.Percentage_2_genome + Retroviral.Percentage_2_genome + hobo.Activator.Percentage_2_genome + Tc1.IS630.Pogo.Percentage_2_genome + MULE.MuDR.Percentage_2_genome + PiggyBac.Percentage_2_genome + Tourist.Harbinger.Percentage_2_genome + Other..Mirage..Percentage_2_genome + Contig.N50, data = noe, correlation = corPagel(1, phylo_tree, form = ~ species))  # pagel correlation
+
+summary(model_Percentage)
+anova(model_Percentage)
+print(model_Percentage)
+
+var_percent <- summary(model_Percentage)$sigma^2
+
+pseudo_R2_percent <- 1 - (var_percent / var_null)
+
+pseudo_R2_percent
+
+percent = 0.59
+
+count = -2.266793e+16
+
+length = .98
+
+```
+
+```{r}
+# Define the columns for individual TEs
+individual_te_cols <- c(
+  "Ty1.Copia.Length..bp.",
+  "L1.CIN4.Length..bp.",
+  "Gypsy.DIRS1.Length..bp.",
+  "hobo.Activator.Length..bp."
+)
+
+# Define columns to be grouped as Other TE
+other_te_cols <- c(
+  "SINEs.Length..bp.",
+  "Penelope.Length..bp.",
+  "CRE.SLACS.Length..bp.",
+  "L2.CR1.Rex.Length..bp.",
+  "R1.LOA.Jockey.Length..bp.",
+  "R2.R4.NeSL.Length..bp.",
+  "RTE.Bov.B.Length..bp.",
+  "BEL.Pao.Length..bp.",
+  "Retroviral.Length..bp.",
+  "Tc1.IS630.Pogo.Length..bp.",
+  "MULE.MuDR.Length..bp.",
+  "PiggyBac.Length..bp.",
+  "Tourist.Harbinger.Length..bp.",
+  "Other..Mirage..Length..bp."
+)
+
+# Select relevant columns 
+count_data <- noe %>%
+  select(Species, Genome.size, all_of(individual_te_cols), all_of(other_te_cols))
+
+# Calculate sum of Other TE lengths per species
+count_data <- count_data %>%
+  mutate(Other_TE = rowSums(select(., all_of(other_te_cols)), na.rm = TRUE))
+
+# Calculate total TE and Non-TE
+count_data <- count_data %>%
+  mutate(
+    Total_TE = rowSums(select(., all_of(individual_te_cols)), na.rm = TRUE) + Other_TE,
+    Non_TE = Genome.size - Total_TE
+  )
+
+# Prepare data for plotting
+te_long <- count_data %>%
+  select(Species, all_of(individual_te_cols), Other_TE, Non_TE) %>%
+  pivot_longer(
+    cols = -Species,
+    names_to = "Repeat_Type",
+    values_to = "Length"
+  ) %>%
+  mutate(Length = Length / 1e9)  # 🔄 Convert from bp to Gbp
+
+# Clean up Repeat_Type labels
+te_long$Repeat_Type <- recode(te_long$Repeat_Type,
+                              "Ty1.Copia.Length..bp." = "Ty1/Copia",
+                              "L1.CIN4.Length..bp." = "L1/CIN4",
+                              "Gypsy.DIRS1.Length..bp." = "Ty3/DIRS1",
+                              "hobo.Activator.Length..bp." = "hobo-Activator",
+                              "Other_TE" = "Other TE",
+                              "Non_TE" = "Non-TE")
+
+# Control stacking order
+te_long$Repeat_Type <- factor(te_long$Repeat_Type, levels = c(
+  "Non-TE",
+  "Other TE",
+  "Ty1/Copia",
+  "L1/CIN4",
+  "Ty3/DIRS1",
+  "hobo-Activator"
+))
+
+# Sort species
+species_order <- count_data %>%
+  arrange(desc(Genome.size)) %>%
+  pull(Species)
+
+te_long$Species <- factor(te_long$Species, levels = species_order)
+
+# Define colors
+colors <- c(
+  "Non-TE" = "#CCCCCC",
+  "Other TE" = "#66c2a5",
+  "Ty1/Copia" = "#fc8d62",
+  "L1/CIN4" = "#8da0cb",
+  "Ty3/DIRS1" = "#e78ac3",
+  "hobo-Activator" = "#a6cee3"
+)
+
+# Italicize species names
+species_labels <- setNames(
+  lapply(levels(te_long$Species), function(x) bquote(italic(.(x)))),
+  levels(te_long$Species)
+)
+
+# Plot
+figure_2a <- ggplot(te_long, aes(x = Species, y = Length, fill = Repeat_Type)) +
+  geom_bar(stat = "identity", position = position_stack(reverse = TRUE), width = 0.8) +
+  coord_flip() +
+  scale_x_discrete(labels = species_labels) +
+  scale_fill_manual(values = colors, name = "Genome Composition") +
+  labs(
+    x = "",
+    y = "Genome Size (Gbp)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 18, face = "bold", hjust = 0),
+    axis.title = element_text(size = 16),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    legend.position = "bottom",
+    legend.direction = "horizontal"
+  )
+
+# Print and save
+print(figure_2a)
+
+ggsave("poster/figure/Figure_2a.pdf", figure_2a, width = 12, height =14, dpi = 900)
+
+ggsave("publication/figures/final_figure/poster.pdf", plot = figure_2a,
+       width = 12, height = 14, units = "in", dpi = 300)
+
+```
+
+poster figure
+```{r}
+# Define pseudo R² values 
+r2_count <- 0.71
+r2_length <- 0.97
+r2_percent <- 0.61
+
+# Define columns
+te_columns.count <- c("total.TEs.counts")
+te_columns.length <- c("total.TEs.length")
+te_columns.percent <- c("total.TEs.percentage_final")
+
+# Create data for each plot
+plot_data.count <- noe %>%
+  mutate(Selected_TE_Length = rowSums(select(., all_of(te_columns.count)), na.rm = TRUE))
+
+plot_data.length <- noe %>%
+  mutate(Selected_TE_Length = rowSums(select(., all_of(te_columns.length)), na.rm = TRUE))
+
+plot_data.percent <- noe %>%
+  mutate(Selected_TE_Length = rowSums(select(., all_of(te_columns.percent)), na.rm = TRUE))
+
+# Plot A: TE count
+a <- ggplot(plot_data.count, aes(x = Selected_TE_Length, y = Genome.size.Gb)) +
+  geom_point(shape = 21, fill = "grey", color = "black", stroke = 0.5, size = 6) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "solid") +
+  labs(x = "TE count", y = "Genome Size (Gbp)") +
+  annotate("text", x = -Inf, y = Inf,
+           label = paste0("Pseudo R² = ", round(r2_count, 3)),
+           hjust = -0.05, vjust = 2.6, size = 10, fontface = "bold") +
+  theme_minimal(base_size = 30, base_family = "sans") +  # larger base font
+  theme(
+    axis.title = element_text(size = 25, face = "bold"),    # axis titles
+    axis.text = element_text(size = 25),                    # axis tick labels
+    plot.title = element_text(size = 25, face = "bold"),    # plot title (if added)
+    legend.text = element_text(size = 25),
+    legend.title = element_text(size = 25, face = "bold"),
+    axis.title.x = element_text(margin = margin(t = 25)),
+    axis.title.y = element_text(margin = margin(r = 25))
+  )
+
+# Plot B: TE length
+b <- ggplot(plot_data.length, aes(x = Selected_TE_Length, y = Genome.size.Gb)) +
+  geom_point(shape = 21, fill = "grey", color = "black", stroke = 0.5, size = 6) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "solid") +
+  labs(x = "TE length", y = "") +
+  annotate("text", x = -Inf, y = Inf,
+           label = paste0("Pseudo R² = ", round(r2_length, 3)),
+           hjust = -0.05, vjust = 2.6, size = 10, fontface = "bold") +
+  theme_minimal(base_size = 30, base_family = "sans") +  # larger base font
+  theme(
+    axis.title = element_text(size = 25, face = "bold"),    # axis titles
+    axis.text = element_text(size = 25),                    # axis tick labels
+    plot.title = element_text(size = 25, face = "bold"),    # plot title (if added)
+    legend.text = element_text(size = 25),
+    legend.title = element_text(size = 25, face = "bold"),
+    axis.title.x = element_text(margin = margin(t = 25)),
+    axis.title.y = element_text(margin = margin(r = 25))
+  )
+
+# Plot C: TE percentage
+c <- ggplot(plot_data.percent, aes(x = Selected_TE_Length, y = Genome.size.Gb)) +
+  geom_point(shape = 21, fill = "grey", color = "black", stroke = 0.5, size = 6) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "solid") +
+  labs(x = "Percent TE", y = "") +
+  annotate("text", x = -Inf, y = Inf,
+           label = paste0("Pseudo R² = ", round(r2_percent, 3)),
+           hjust = -0.05, vjust = 2.6, size = 10, fontface = "bold") +
+  theme_minimal(base_size = 30, base_family = "sans") +
+  theme(
+    axis.title = element_text(size = 25, face = "bold"),    # axis titles
+    axis.text = element_text(size = 25),                    # axis tick labels
+    plot.title = element_text(size = 25, face = "bold"),    # plot title (if added)
+    legend.text = element_text(size = 25),
+    legend.title = element_text(size = 25, face = "bold"),
+    axis.title.x = element_text(margin = margin(t = 25)),
+    axis.title.y = element_text(margin = margin(r = 25))
+  )
+
+# Combine horizontally
+figure_2c <- a + b + c + plot_layout(ncol = 3)
+print(figure_2c)
+
+# Save plot to file
+ggsave("poster/figure/Figure_2c.pdf", figure_2c, width = 20, height = 8, dpi = 900)
+
+
+```
+
